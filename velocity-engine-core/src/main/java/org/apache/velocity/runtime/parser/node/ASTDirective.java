@@ -57,7 +57,7 @@ public class ASTDirective extends SimpleNode
     private Directive directive = null;
     private String directiveName = "";
     private boolean isDirective;
-    private boolean isInitialized;
+    private volatile boolean isInitialized;
 
     private String prefix = "";
     private String postfix = "";
@@ -98,125 +98,131 @@ public class ASTDirective extends SimpleNode
      * @see org.apache.velocity.runtime.parser.node.SimpleNode#init(org.apache.velocity.context.InternalContextAdapter, java.lang.Object)
      */
     @Override
-    public synchronized Object init(InternalContextAdapter context, Object data)
+    public Object init(InternalContextAdapter context, Object data)
     throws TemplateInitException
     {
-        Token t;
-
-        /* method is synchronized to avoid concurrent directive initialization **/
+        /* Double-checked locking to avoid concurrent directive initialization while preventing deadlock **/
 
         if (!isInitialized)
         {
-            super.init( context, data );
-
-            /*
-             * handle '$' and '#' chars prefix
-             */
-            t = getFirstToken();
-            int pos = -1;
-            while (t != null && (pos = t.image.lastIndexOf(rsvc.getParserConfiguration().getHashChar())) == -1)
+            synchronized(this)
             {
-                t = t.next;
-            }
-            if (t != null && pos > 0)
-            {
-                morePrefix = t.image.substring(0, pos);
-            }
-
-            /*
-             *  only do things that are not context dependent
-             */
-
-            if (parser.isDirective( directiveName ))
-            {
-                isDirective = true;
-
-                try
+                if (!isInitialized)
                 {
-                    directive = parser.getDirective( directiveName )
-                        .getClass().newInstance();
-                }
-                catch (InstantiationException | IllegalAccessException e)
-                {
-                    throw new VelocityException(
-                            "Couldn't initialize directive of class " +
-                            parser.getDirective(directiveName).getClass().getName(),
-                            e, rsvc.getLogContext().getStackTrace());
-                }
+                    Token t;
 
-                t = getFirstToken();
-                if (t.kind == StandardParserConstants.WHITESPACE) t = t.next;
-                directive.setLocation(t.beginLine, t.beginColumn, getTemplate());
-                directive.init(rsvc, context, this);
-            }
-            else if( directiveName.startsWith(String.valueOf(rsvc.getParserConfiguration().getAtChar())) )
-            {
-                if( this.jjtGetNumChildren() > 0 )
-                {
-                    // block macro call (normal macro call but has AST body)
-                    directiveName = directiveName.substring(1);
+                    super.init( context, data );
 
-                    directive = new BlockMacro();
-                    directive.setLocation(getLine(), getColumn(), getTemplate());
-
-                    try
+                    /*
+                     * handle '$' and '#' chars prefix
+                     */
+                    t = getFirstToken();
+                    int pos = -1;
+                    while (t != null && (pos = t.image.lastIndexOf(rsvc.getParserConfiguration().getHashChar())) == -1)
                     {
-                        ((BlockMacro)directive).init( rsvc, directiveName, context, this );
+                        t = t.next;
                     }
-                    catch (TemplateInitException die)
+                    if (t != null && pos > 0)
                     {
-                        throw new TemplateInitException(die.getMessage(),
-                            (ParseException) die.getCause(),
-                            rsvc.getLogContext().getStackTrace(),
-                            die.getTemplateName(),
-                            die.getColumnNumber() + getColumn(),
-                            die.getLineNumber() + getLine());
+                        morePrefix = t.image.substring(0, pos);
                     }
-                    isDirective = true;
-                }
-                else
-                {
-                    // this is a fake block macro call without a body. e.g. #@foo
-                    // just render as it is
-                    isDirective = false;
+
+                    /*
+                     *  only do things that are not context dependent
+                     */
+
+                    if (parser.isDirective( directiveName ))
+                    {
+                        isDirective = true;
+
+                        try
+                        {
+                            directive = parser.getDirective( directiveName )
+                                .getClass().newInstance();
+                        }
+                        catch (InstantiationException | IllegalAccessException e)
+                        {
+                            throw new VelocityException(
+                                    "Couldn't initialize directive of class " +
+                                    parser.getDirective(directiveName).getClass().getName(),
+                                    e, rsvc.getLogContext().getStackTrace());
+                        }
+
+                        t = getFirstToken();
+                        if (t.kind == StandardParserConstants.WHITESPACE) t = t.next;
+                        directive.setLocation(t.beginLine, t.beginColumn, getTemplate());
+                        directive.init(rsvc, context, this);
+                    }
+                    else if( directiveName.startsWith(String.valueOf(rsvc.getParserConfiguration().getAtChar())) )
+                    {
+                        if( this.jjtGetNumChildren() > 0 )
+                        {
+                            // block macro call (normal macro call but has AST body)
+                            directiveName = directiveName.substring(1);
+
+                            directive = new BlockMacro();
+                            directive.setLocation(getLine(), getColumn(), getTemplate());
+
+                            try
+                            {
+                                ((BlockMacro)directive).init( rsvc, directiveName, context, this );
+                            }
+                            catch (TemplateInitException die)
+                            {
+                                throw new TemplateInitException(die.getMessage(),
+                                    (ParseException) die.getCause(),
+                                    rsvc.getLogContext().getStackTrace(),
+                                    die.getTemplateName(),
+                                    die.getColumnNumber() + getColumn(),
+                                    die.getLineNumber() + getLine());
+                            }
+                            isDirective = true;
+                        }
+                        else
+                        {
+                            // this is a fake block macro call without a body. e.g. #@foo
+                            // just render as it is
+                            isDirective = false;
+                        }
+                    }
+                    else
+                    {
+                        /*
+                          Create a new RuntimeMacro
+                         */
+                        directive = new RuntimeMacro();
+                        directive.setLocation(getLine(), getColumn(), getTemplate());
+
+                        /*
+                          Initialize it
+                         */
+                        try
+                        {
+                            ((RuntimeMacro)directive).init( rsvc, directiveName, context, this );
+                        }
+
+                        /*
+                          correct the line/column number if an exception is caught
+                         */
+                        catch (TemplateInitException die)
+                        {
+                            throw new TemplateInitException(die.getMessage(),
+                                    (ParseException) die.getCause(),
+                                    rsvc.getLogContext().getStackTrace(),
+                                    die.getTemplateName(),
+                                    die.getColumnNumber() + getColumn(),
+                                    die.getLineNumber() + getLine());
+                        }
+                        isDirective = true;
+
+                    }
+
+                    isInitialized = true;
+
+                    saveTokenImages();
+                    cleanupParserAndTokens();
                 }
             }
-            else
-            {
-                /*
-                  Create a new RuntimeMacro
-                 */
-                directive = new RuntimeMacro();
-                directive.setLocation(getLine(), getColumn(), getTemplate());
-
-                /*
-                  Initialize it
-                 */
-                try
-                {
-                    ((RuntimeMacro)directive).init( rsvc, directiveName, context, this );
-                }
-
-                /*
-                  correct the line/column number if an exception is caught
-                 */
-                catch (TemplateInitException die)
-                {
-                    throw new TemplateInitException(die.getMessage(),
-                            (ParseException) die.getCause(),
-                            rsvc.getLogContext().getStackTrace(),
-                            die.getTemplateName(),
-                            die.getColumnNumber() + getColumn(),
-                            die.getLineNumber() + getLine());
-                }
-                isDirective = true;
-
-            }
-
-            isInitialized = true;
-
-            saveTokenImages();
-            cleanupParserAndTokens();
         }
 
         if (morePrefix.length() == 0 && rsvc.getSpaceGobbling() == SpaceGobbling.STRUCTURED && isInitialized && isDirective && directive.getType() == Directive.BLOCK)
