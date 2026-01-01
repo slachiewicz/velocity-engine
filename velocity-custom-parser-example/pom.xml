@@ -148,7 +148,7 @@
                     <debugParser>${parser.debug}</debugParser>
                     <debugLookAhead>${parser.debug}</debugLookAhead>
                     <debugTokenManager>${parser.debug}</debugTokenManager>
-                    <jdkVersion>${maven.compiler.target}</jdkVersion>
+                    <jdkVersion>1.8</jdkVersion>
                     <nodeUsesParser>true</nodeUsesParser>
                     <nodePackage>${parser.package}.node</nodePackage>
                     <sourceDirectory>${project.build.directory}/parser/org/apache/velocity/runtime/parser</sourceDirectory>
